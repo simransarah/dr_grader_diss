@@ -46,6 +46,9 @@ class SegmentationDataset(Dataset):
             image = augmented['image']
             combined_mask = augmented['mask']     
 
+        if not isinstance(combined_mask, torch.Tensor):
+            combined_mask = torch.from_numpy(combined_mask)
+
         if combined_mask.ndim == 3 and combined_mask.shape[2] == 3:
             combined_mask = combined_mask.permute(2, 0, 1)  # change from (H, W, C) to (C, H, W)
 

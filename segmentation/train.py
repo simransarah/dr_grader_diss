@@ -1,3 +1,5 @@
+print("Running segmentation training script...")
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -97,6 +99,7 @@ def validate(loader, model, loss_function):
     return score
 
 if __name__ == "__main__":
+    print("Starting training process...")
     train_transform = get_train_transforms()
     val_transform = get_val_transforms()
 
@@ -112,8 +115,8 @@ if __name__ == "__main__":
         transform=val_transform
     )
 
-    train_loader = DataLoader(train_dataset, batch_size=SegmentationConfig.batch_size, num_workers=2, pin_memory=True, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=SegmentationConfig.batch_size, num_workers=2, pin_memory=True, shuffle=False)
+    train_loader = DataLoader(train_dataset, batch_size=SegmentationConfig.batch_size, num_workers=0, pin_memory=True, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=SegmentationConfig.batch_size, num_workers=0, pin_memory=True, shuffle=False)
 
     model = Attention_UNet(num_classes=SegmentationConfig.num_classes).to(SegmentationConfig.device)
     loss_function = DiceFocalLoss(alpha=0.8, gamma=2)

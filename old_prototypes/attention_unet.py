@@ -62,11 +62,11 @@ class AttentionGate(nn.Module):
 # num_channels = number of input image channels
 # num_classes = number of output segmentation classes
 class Attention_UNet(nn.Module):
-    def __init__(self, num_channels, num_classes, bilinear=False):
+    def __init__(self, num_channels = 3, num_classes = 3):
         super(Attention_UNet, self).__init__()
         self.num_channels = num_channels
         self.num_classes = num_classes
-        self.bilinear = bilinear
+        
 
         # Encoder path = repeated ConvBlock followed by max-pooling
         self.inc = ConvBlock(num_channels, 64)   # initial convs
