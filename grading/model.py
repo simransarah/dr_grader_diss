@@ -22,13 +22,17 @@ class HybridModel(nn.Module):
 
         with torch.no_grad():
             self.cnn.features[0][0].weight[:, :3, :, :] = original_conv.weight
-            self.cnn.features[0][0].weight[:, 3:, :, :].torch.mean(original_conv.weight, dim=1, keepdim=True)
+            self.cnn.features[0][0].weight[:, 3:, :, :] = torch.mean(original_conv.weight, dim=1, keepdim=True)
 
         self.feature_extractor = nn.Sequential(*list(self.cnn.children())[:-2])
         self.projection = nn.Conv2d(1280, embedding_dim, kernel_size=1)
 
         self.cls_token = nn.Parameter(torch.zeros(1, 1, embedding_dim))
         self.positional_encoding = nn.Parameter(torch.randn(1,257, embedding_dim))
+
+        
+        encoder_layer = nn.TransformerEncoderLayer(d_model=embedding_dim, nhead=num_heads, batch_first=True)
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
 
         self.classifier = nn.Sequential(
             nn.LayerNorm(embedding_dim),
@@ -43,7 +47,9 @@ class HybridModel(nn.Module):
         b = features.shape[0]
         cls_tokens = self.cls_token.expand(b, -1, -1)
         x = torch.cat((cls_tokens, features), dim=1)
-        x = x + self.positional_embedding 
+        
+    
+        x = x + self.positional_encoding 
 
         x = self.transformer(x) 
 

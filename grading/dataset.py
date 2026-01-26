@@ -2,6 +2,7 @@ import os
 import cv2
 import torch 
 import pandas as pd
+import numpy as np
 from torch.utils.data import Dataset
 
 class GradingDataset(Dataset):
@@ -21,7 +22,7 @@ class GradingDataset(Dataset):
         row = self.labels_df.iloc[index]
 
         # get filenames
-        img_filename = row['Image Name']
+        img_filename = str(row['Image name'])
         if not img_filename.endswith('.jpg'):
             img_filename += '.jpg'
 
@@ -29,7 +30,7 @@ class GradingDataset(Dataset):
         map_path = os.path.join(self.maps_dir, img_filename)
 
         # get label
-        label = int(row['Disease Grade'])
+        label = int(row['Retinopathy grade'])
 
         # load image
         image = cv2.imread(img_path)
@@ -63,5 +64,5 @@ class GradingDataset(Dataset):
             density_map = torch.from_numpy(density_map).unsqueeze(0).float() / 255.0
 
         fused_input = torch.cat([image, density_map], dim=0)  
-        
+
         return fused_input, torch.tensor(label, dtype=torch.long)

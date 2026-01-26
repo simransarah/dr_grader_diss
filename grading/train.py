@@ -18,7 +18,7 @@ def get_transforms():
         ToTensorV2()
     ])
 
-def train_one_epoch(loader, model, optimiser, loss_function, device):
+def train_one_epoch(loader, model, optimiser, loss_function, scaler):
     loop = tqdm(loader, leave=True)
     total_loss = 0
 
@@ -63,3 +63,47 @@ def validate(loader, model, loss_function):
     qwk = quadratic_weighted_kappa(torch.cat(all_predictions), torch.cat(all_targets))
     model.train()
     print(f"Validation Loss: {val_loss / len(loader):.4f}, QWK: {qwk:.4f}")
+    return qwk 
+
+if __name__ == "__main__":
+    transforms = get_transforms()
+
+    train_dataset = GradingDataset(GradingConfig.train_images_dir, 
+                                   GradingConfig.train_maps_dir,
+                                   GradingConfig.train_labels_file,
+                                   transforms)
+    validation_dataset = GradingDataset(GradingConfig.val_images_dir,
+                                        GradingConfig.val_maps_dir,
+                                        GradingConfig.val_labels_file,
+                                        transforms)
+    
+    train_loader = DataLoader(
+        train_dataset, 
+        batch_size=GradingConfig.batch_size, 
+        shuffle=True, 
+        num_workers=GradingConfig.num_workers,
+        pin_memory=True
+    )
+    validation_loader = DataLoader(
+        validation_dataset, 
+        batch_size=GradingConfig.batch_size, 
+        shuffle=False, 
+        num_workers=GradingConfig.num_workers,
+        pin_memory=True
+    )
+    
+    model = HybridModel(num_classes=GradingConfig.num_classes).to(GradingConfig.device)
+    loss_function = nn.CrossEntropyLoss()
+    optimiser = optim.Adam(model.parameters(), lr=GradingConfig.learning_rate)
+    scaler = torch.amp.GradScaler('cuda')
+
+    print("Starting Stage 2 training process...")
+    best_qwk = -1
+    for epoch in range(GradingConfig.num_epochs):
+        print(f"Epoch [{epoch+1}/{GradingConfig.num_epochs}]")
+        train_one_epoch(train_loader, model, optimiser, loss_function, scaler)
+        qwk = validate(validation_loader, model, loss_function)
+        if qwk > best_qwk:
+            best_qwk = qwk
+            torch.save(model.state_dict(), "best_grading_model.pth")
+            print("Saved Best Model!")
