@@ -1,6 +1,7 @@
 import torch 
 import torch.nn as nn
 import torch.nn.functional as F
+from monai.losses import TverskyLoss, FocalLoss as MonaiFocalLoss
 
 class FocalLoss(nn.Module): 
     def __init__(self, alpha=0.8, gamma=2):
@@ -43,3 +44,25 @@ class DiceFocalLoss(nn.Module):
 
         # combine focal loss and dice loss
         return focal + dice_loss
+
+class HybridLoss(nn.Module):
+    def __init__(self, alpha=0.3, beta=0.7, gamma=2.0):
+        super(HybridLoss, self).__init__()
+        
+        self.tversky = TverskyLoss(
+            include_background=True, 
+            to_onehot_y=False, 
+            sigmoid=True, 
+            alpha=alpha, 
+            beta=beta
+        )
+        
+        self.focal = MonaiFocalLoss(
+            include_background=True, 
+            to_onehot_y=False, 
+            gamma=gamma, 
+            weight=None
+        )
+
+    def forward(self, preds, targets):
+        return self.tversky(preds, targets) + self.focal(preds, targets)

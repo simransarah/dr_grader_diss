@@ -6,14 +6,12 @@ import torch
 import torch.optim as optim
 from tqdm import tqdm
 from monai.data import DataLoader, Dataset, PILReader
-from monai.losses import DiceCELoss
 from monai.metrics import DiceMetric
 from monai.inferers import sliding_window_inference
 from monai.transforms import (
     Compose, 
     LoadImaged, 
     EnsureChannelFirstd, 
-    ScaleIntensityd, 
     RandRotate90d, 
     RandFlipd, 
     RandCropByPosNegLabeld, 
@@ -22,42 +20,55 @@ from monai.transforms import (
 
 from segmentation.config import SegmentationConfig
 from segmentation.dataset import get_monai_data_dicts
-from segmentation.model import Attention_UNet
+from segmentation.model import Transfer_UNet
+from segmentation.loss import HybridLoss
 
 class EnhanceFundusImaged(MapTransform):
     def __init__(self, keys, gamma=0.8, clip_limit=2.0, tile_grid_size=(8,8), allow_missing_keys=False):
         super().__init__(keys, allow_missing_keys)
         self.gamma = gamma
-        self.clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_grid_size)
+        self.clip_limit = clip_limit
+        self.tile_grid_size = tile_grid_size
 
     def __call__(self, data):
         d = dict(data)
+        # initialisation to avoid pickling errors with multi-processing
+        clahe = cv2.createCLAHE(clipLimit=self.clip_limit, tileGridSize=self.tile_grid_size)
+        
         for key in self.keys:
             img = d[key]
             if isinstance(img, torch.Tensor):
                 img = img.numpy()
             
+            # HWC for OpenCV processing
+            if img.ndim == 3 and img.shape[0] == 3:
+                img = np.transpose(img, (1, 2, 0))
+            
+            # green channel extraction
             if img.ndim == 3:
-                if img.shape[-1] in [3, 4]:
-                    green = img[:, :, 1]
-                elif img.shape[0] in [3, 4]:
-                    green = img[1, :, :]
-                else:
-                    green = img.squeeze()
+                green = img[:, :, 1]
             else:
                 green = img 
 
+          
             if green.max() > 1:
                 green = green / 255.0
                 
+            # gamma correction
             green = np.power(green, self.gamma)
             
+            # CLAHE
             green_uint8 = (green * 255).astype(np.uint8)
-            green_clahe = self.clahe.apply(green_uint8)
-            
+            green_clahe = clahe.apply(green_uint8)
             green_final = green_clahe.astype(np.float32) / 255.0
             
-            d[key] = torch.tensor(green_final).unsqueeze(0)
+            # reconstruction of RGB for EfficientNet compatibility
+            if img.ndim == 3 and img.shape[-1] == 3:
+                img[:, :, 1] = green_final
+            else:
+                img = np.stack([green_final, green_final, green_final], axis=-1)
+
+            d[key] = torch.tensor(np.transpose(img, (2, 0, 1)))
             
         return d
 
@@ -68,7 +79,6 @@ class LoadLesionsd(MapTransform):
 
     def __call__(self, data):
         d = dict(data)
-        
         spatial_shape = d['image'].shape[1:] 
 
         lesion_tensors = []
@@ -105,17 +115,13 @@ def get_transforms():
         LoadImaged(keys=["image"], reader=PILReader), 
         EnhanceFundusImaged(keys=["image"]),
         LoadLesionsd(keys=["ma", "he", "ex"]),
-        
-        EnsureChannelFirstd(keys=["image"], channel_dim=0), 
-
         RandCropByPosNegLabeld(
             keys=["image", "label"],
             label_key="label",
-            spatial_size=(512, 512),  
+            spatial_size=SegmentationConfig.patch_size,  
             pos=4, neg=1, 
-            num_samples= 16  
+            num_samples=4 
         ),
-        
         RandRotate90d(keys=["image", "label"], prob=0.5, spatial_axes=[0, 1]),
         RandFlipd(keys=["image", "label"], prob=0.5, spatial_axis=0),
     ])
@@ -124,35 +130,32 @@ def get_transforms():
         LoadImaged(keys=["image"], reader=PILReader),
         EnhanceFundusImaged(keys=["image"]),
         LoadLesionsd(keys=["ma", "he", "ex"]),
-        EnsureChannelFirstd(keys=["image"], channel_dim=0), 
     ])
     return train_tfm, val_tfm
 
 if __name__ == "__main__":
-    print("Starting Green-Channel Training...")
+    print(f"Starting Training with {SegmentationConfig.backbone}...")
     train_files = get_monai_data_dicts(SegmentationConfig.train_images_dir, SegmentationConfig.train_masks_dir)
     val_files = get_monai_data_dicts(SegmentationConfig.val_images_dir, SegmentationConfig.val_masks_dir)
     
     train_tfm, val_tfm = get_transforms()
     
-    train_loader = DataLoader(Dataset(train_files, train_tfm), batch_size=SegmentationConfig.batch_size, shuffle=True, num_workers=0)
+    train_loader = DataLoader(Dataset(train_files, train_tfm), batch_size=SegmentationConfig.batch_size, shuffle=True, num_workers=2)
     val_loader = DataLoader(Dataset(val_files, val_tfm), batch_size=1, num_workers=0)
 
-    model = Attention_UNet(
-        spatial_dims=2,
-        in_channels=SegmentationConfig.in_channels,
-        out_channels=SegmentationConfig.num_classes,
-        channels=(16, 32, 64, 128, 256),
-        strides=(2, 2, 2, 2)
+    model = Transfer_UNet(
+        num_classes=SegmentationConfig.num_classes,
+        backbone=SegmentationConfig.backbone,
+        pretrained=SegmentationConfig.pretrained
     ).to(SegmentationConfig.device)
     
-    loss_func = DiceCELoss(include_background=True, sigmoid=True, lambda_dice=0.5, lambda_ce=0.5)
+    loss_func = HybridLoss(alpha=0.3, beta=0.7)
     
     optimiser = optim.Adam(model.parameters(), lr=SegmentationConfig.learning_rate)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimiser, mode='max', factor=0.1, patience=10, verbose=True)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimiser, mode='max', factor=0.1, patience=10)
     dice_metric = DiceMetric(include_background=True, reduction="mean_batch") 
 
-    scaler = torch.cuda.amp.GradScaler()
+    scaler = torch.amp.GradScaler('cuda')
     accumulation_steps = SegmentationConfig.virtual_batch_size // SegmentationConfig.batch_size
 
     best_dice = -1
@@ -166,14 +169,12 @@ if __name__ == "__main__":
             inputs = batch["image"].to(SegmentationConfig.device).float()
             labels = batch["label"].to(SegmentationConfig.device)
             
-            # AMP for memory efficiency
-            with torch.cuda.amp.autocast():
+            with torch.amp.autocast('cuda'):
                 outputs = model(inputs)
                 loss = loss_func(outputs, labels) / accumulation_steps
             
             scaler.scale(loss).backward()
             
-            # Virtual Batch Update
             if (i + 1) % accumulation_steps == 0:
                 scaler.step(optimiser)
                 scaler.update()
@@ -190,20 +191,14 @@ if __name__ == "__main__":
                 dice_metric(y_pred=v_out, y=v_lab)
             
             scores = dice_metric.aggregate() 
-            ma_score = scores[0].item()
-            he_score = scores[1].item()
-            ex_score = scores[2].item()
-            mean_val_dice = scores.mean().item()
             dice_metric.reset()
+            
+            mean_val_dice = scores.mean().item()
             scheduler.step(mean_val_dice)
             
-            print(f"Epoch {epoch+1} Results:")
-            print(f"   MA Dice: {ma_score:.4f}  (Microaneurysms)")
-            print(f"   HE Dice: {he_score:.4f}  (Haemorrhages)")
-            print(f"   EX Dice: {ex_score:.4f}  (Hard Exudates)")
-            print(f"   Mean Dice: {mean_val_dice:.4f}")
+            print(f"Epoch {epoch+1} Results: Mean Dice: {mean_val_dice:.4f} | MA: {scores[0]:.4f} | HE: {scores[1]:.4f} | EX: {scores[2]:.4f}")
             
             if mean_val_dice > best_dice:
                 best_dice = mean_val_dice
-                torch.save(model.state_dict(), "best_monai_segmentation.pth")
+                torch.save(model.state_dict(), "best_transfer_model.pth")
                 print(">>> New Best Model Saved :)")

@@ -12,15 +12,18 @@ class SegmentationConfig:
     val_masks_dir = os.path.join(root_dir, "2. All Segmentation Groundtruths", "b. Testing Set")
     
     # model parameters
+    backbone = "efficientnet-b3"
+    pretrained = True
     patch_size = (512, 512)
-    in_channels = 1 
-    batch_size = 2
-    virtual_batch_size = 16
+    in_channels = 3  
+    out_channels = 3 
+    batch_size = 4   
+    virtual_batch_size = 16 
     learning_rate = 1e-4
     num_epochs = 100
     num_classes = 3
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # data augmentation parameters
-    clahe_probability = 1 
+    clahe_probability = 1.0 
     grid_distortion_probability = 0.5

@@ -1,5 +1,6 @@
 import torch 
 import torch.nn as nn
+from monai.networks.nets import FlexibleUNet
 
 class ConvBlock(nn.Module): 
     def __init__(self, in_channels, out_channels):
@@ -46,11 +47,10 @@ class AttentionGate(nn.Module):
         return x * psi
     
 class Attention_UNet(nn.Module):
-    # in_channels=1 for green channel only config
+    # in_channels=1 for new green channel only configuration
     def __init__(self, in_channels=1, out_channels=3, **kwargs):
         super(Attention_UNet, self).__init__()
         
-    
         filters = [32, 64, 128, 256, 512]
 
         # encoder 
@@ -113,4 +113,21 @@ class Attention_UNet(nn.Module):
 
         logits = self.outc(d2)
         return logits
+
+class Transfer_UNet(nn.Module):
+    def __init__(self, num_classes=3, backbone="efficientnet-b3", pretrained=True):
+        super(Transfer_UNet, self).__init__()
         
+        self.model = FlexibleUNet(
+            in_channels=3,
+            out_channels=num_classes,
+            backbone=backbone,
+            pretrained=pretrained,
+            spatial_dims=2,
+            is_pad=False
+        )
+
+    def forward(self, x):
+        if x.dtype != torch.float32:
+            x = x.float()
+        return self.model(x)
