@@ -12,10 +12,12 @@ class SegmentationConfig:
     val_masks_dir = os.path.join(root_dir, "2. All Segmentation Groundtruths", "b. Testing Set")
     
     # model parameters
-    img_size = 512 
-    batch_size = 8
+    patch_size = (512, 512)
+    in_channels = 1 
+    batch_size = 2
+    virtual_batch_size = 16
     learning_rate = 1e-4
-    num_epochs = 50
+    num_epochs = 100
     num_classes = 3
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 

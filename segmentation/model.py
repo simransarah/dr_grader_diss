@@ -46,37 +46,42 @@ class AttentionGate(nn.Module):
         return x * psi
     
 class Attention_UNet(nn.Module):
-    def __init__(self, num_channels = 3, num_classes = 3):
+    # in_channels=1 for green channel only config
+    def __init__(self, in_channels=1, out_channels=3, **kwargs):
         super(Attention_UNet, self).__init__()
+        
+    
+        filters = [32, 64, 128, 256, 512]
+
         # encoder 
-        self.inc = ConvBlock(num_channels, 64)
+        self.inc = ConvBlock(in_channels, filters[0])
         self.down1 = nn.MaxPool2d(2)
-        self.conv1 = ConvBlock(64, 128)
+        self.conv1 = ConvBlock(filters[0], filters[1])
         self.down2 = nn.MaxPool2d(2)
-        self.conv2 = ConvBlock(128, 256)
+        self.conv2 = ConvBlock(filters[1], filters[2])
         self.down3 = nn.MaxPool2d(2)
-        self.conv3 = ConvBlock(256, 512)
+        self.conv3 = ConvBlock(filters[2], filters[3])
         self.down4 = nn.MaxPool2d(2)
-        self.conv4 = ConvBlock(512, 1024)
+        self.conv4 = ConvBlock(filters[3], filters[4])
 
         # decoder with attention gates
-        self.up1 = nn.ConvTranspose2d(1024, 512, kernel_size=2, stride=2)
-        self.att1 = AttentionGate(F_g=512, F_l=512, F_int=256)
-        self.conv_up1 = ConvBlock(1024, 512)
+        self.up1 = nn.ConvTranspose2d(filters[4], filters[3], kernel_size=2, stride=2)
+        self.att1 = AttentionGate(F_g=filters[3], F_l=filters[3], F_int=filters[2])
+        self.conv_up1 = ConvBlock(filters[4], filters[3])
 
-        self.up2 = nn.ConvTranspose2d(512, 256, kernel_size=2, stride=2)
-        self.att2 = AttentionGate(F_g=256, F_l=256, F_int=128)
-        self.conv_up2 = ConvBlock(512, 256)
+        self.up2 = nn.ConvTranspose2d(filters[3], filters[2], kernel_size=2, stride=2)
+        self.att2 = AttentionGate(F_g=filters[2], F_l=filters[2], F_int=filters[1])
+        self.conv_up2 = ConvBlock(filters[3], filters[2])
 
-        self.up3 = nn.ConvTranspose2d(256, 128, kernel_size=2, stride=2)
-        self.att3 = AttentionGate(F_g=128, F_l=128, F_int=64)
-        self.conv_up3 = ConvBlock(256, 128)
+        self.up3 = nn.ConvTranspose2d(filters[2], filters[1], kernel_size=2, stride=2)
+        self.att3 = AttentionGate(F_g=filters[1], F_l=filters[1], F_int=filters[0])
+        self.conv_up3 = ConvBlock(filters[2], filters[1])
 
-        self.up4 = nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2)
-        self.att4 = AttentionGate(F_g=64, F_l=64, F_int=32)
-        self.conv_up4 = ConvBlock(128, 64)
+        self.up4 = nn.ConvTranspose2d(filters[1], filters[0], kernel_size=2, stride=2)
+        self.att4 = AttentionGate(F_g=filters[0], F_l=filters[0], F_int=int(filters[0]/2))
+        self.conv_up4 = ConvBlock(filters[1], filters[0])
 
-        self.outc = nn.Conv2d(64, num_classes, kernel_size=1)
+        self.outc = nn.Conv2d(filters[0], out_channels, kernel_size=1)
 
     def forward(self, x):
         x1 = self.inc(x)
