@@ -14,7 +14,7 @@ from monai.transforms import (
     RandFlipd, 
     RandCropByPosNegLabeld, 
     MapTransform,
-    DeleteKeysd
+    DeleteItemsd
 ) 
 
 from segmentation.config_micro import MicroConfig
@@ -83,10 +83,11 @@ class LoadMAd(MapTransform):
 def get_micro_transforms():
     train_tfm = Compose([
         LoadImaged(keys=["image"], reader=PILReader), 
-        DeleteKeysd(keys=["he", "ex"], allow_missing_keys=True), 
+        
+        DeleteItemsd(keys=["he", "ex"]), 
         
         EnhanceGreenChanneld(keys=["image"]),
-        LoadMAd(keys=["ma"]), 
+        LoadMAd(keys=["ma"]),
         
         RandCropByPosNegLabeld(
             keys=["image", "label"],
@@ -102,7 +103,7 @@ def get_micro_transforms():
 
     val_tfm = Compose([
         LoadImaged(keys=["image"], reader=PILReader),
-        DeleteKeysd(keys=["he", "ex"], allow_missing_keys=True),
+        DeleteItemsd(keys=["he", "ex"]),
         EnhanceGreenChanneld(keys=["image"]),
         LoadMAd(keys=["ma"]),
     ])
