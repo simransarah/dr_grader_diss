@@ -13,8 +13,9 @@ from monai.transforms import (
     RandRotate90d, 
     RandFlipd, 
     RandCropByPosNegLabeld, 
-    MapTransform
-)
+    MapTransform,
+    DeleteKeysd
+) 
 
 from segmentation.config_micro import MicroConfig
 from segmentation.dataset import get_monai_data_dicts
@@ -82,15 +83,26 @@ class LoadMAd(MapTransform):
 def get_micro_transforms():
     train_tfm = Compose([
         LoadImaged(keys=["image"], reader=PILReader), 
+        DeleteKeysd(keys=["he", "ex"], allow_missing_keys=True), 
+        
         EnhanceGreenChanneld(keys=["image"]),
-        LoadMAd(keys=["ma"]),
-        # The '64x64 Imperative': Tiny patches to force gradient focus on MAs
-        RandCropByPosNegLabeld(keys=["image", "label"], label_key="label", spatial_size=MicroConfig.patch_size, pos=2, neg=1, num_samples=16),
+        LoadMAd(keys=["ma"]), 
+        
+        RandCropByPosNegLabeld(
+            keys=["image", "label"],
+            label_key="label",
+            spatial_size=MicroConfig.patch_size,  
+            pos=2, neg=1, 
+            num_samples=16 
+        ),
+        
         RandRotate90d(keys=["image", "label"], prob=0.5, spatial_axes=[0, 1]),
         RandFlipd(keys=["image", "label"], prob=0.5, spatial_axis=0),
     ])
+
     val_tfm = Compose([
         LoadImaged(keys=["image"], reader=PILReader),
+        DeleteKeysd(keys=["he", "ex"], allow_missing_keys=True),
         EnhanceGreenChanneld(keys=["image"]),
         LoadMAd(keys=["ma"]),
     ])
