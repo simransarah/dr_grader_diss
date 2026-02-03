@@ -95,7 +95,7 @@ def get_micro_transforms():
             spatial_size=MicroConfig.patch_size,  
             pos=4, neg=1, # Increased from 2 to 4
             num_samples=16 
-        )
+        ),
         
         RandRotate90d(keys=["image", "label"], prob=0.5, spatial_axes=[0, 1]),
         RandFlipd(keys=["image", "label"], prob=0.5, spatial_axis=0),
