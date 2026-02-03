@@ -3,7 +3,7 @@ import torch
 
 class SegmentationConfig:
     # paths
-    root_dir = os.path.join("/kaggle", "input", "idrid-segmentation", "A. Segmentation")
+    root_dir = os.path.join("/kaggle", "input", "idriddata", "data", "IDRiD", "A. Segmentation")
 
     train_images_dir = os.path.join(root_dir, "1. Original Images", "a. Training Set")
     train_masks_dir = os.path.join(root_dir, "2. All Segmentation Groundtruths", "a. Training Set")
