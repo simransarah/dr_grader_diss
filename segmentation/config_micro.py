@@ -23,7 +23,7 @@ class MicroConfig:
     
     # Training hyperparameters
     batch_size = 128              # Tiny patches allow for a massive batch size to stabilise gradients
-    learning_rate = 2e-4          # Slightly higher LR as we are training from scratch
+    learning_rate = 5e-4          # Slightly higher LR as we are training from scratch
     num_epochs = 100
     
     # Hardware
