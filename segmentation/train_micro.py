@@ -93,9 +93,9 @@ def get_micro_transforms():
             keys=["image", "label"],
             label_key="label",
             spatial_size=MicroConfig.patch_size,  
-            pos=2, neg=1, 
+            pos=4, neg=1, # Increased from 2 to 4
             num_samples=16 
-        ),
+        )
         
         RandRotate90d(keys=["image", "label"], prob=0.5, spatial_axes=[0, 1]),
         RandFlipd(keys=["image", "label"], prob=0.5, spatial_axis=0),
@@ -119,7 +119,7 @@ if __name__ == "__main__":
     val_loader = DataLoader(Dataset(val_files, val_tfm), batch_size=1, num_workers=0)
 
     model = Attention_UNet(in_channels=1, out_channels=1).to(MicroConfig.device)
-    loss_func = HybridLoss(alpha=0.3, beta=0.7)
+    loss_func = HybridLoss(alpha=0.7, beta=0.3)
     optimiser = optim.Adam(model.parameters(), lr=MicroConfig.learning_rate)
     dice_metric = DiceMetric(include_background=True, reduction="mean_batch") 
     scaler = torch.amp.GradScaler('cuda')
