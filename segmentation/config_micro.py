@@ -16,14 +16,19 @@ class MicroConfig:
     val_masks_dir = os.path.join(root_dir, "2. All Segmentation Groundtruths", "b. Testing Set")
     
     # Model parameters
-    model_type = "attention_unet" # Custom Attention U-Net is best for tiny, sparse targets
-    patch_size = (64, 64)         # Critical: Small patches ensure MAs aren't lost in the background
+    model_type = "attention_unet" 
+    
+    # CHANGED: Increased from 64 to 256 for IDRiD context
+    patch_size = (256, 256)         
+    
     in_channels = 1               # Green Channel Only (High Contrast)
     out_channels = 1              # Binary Segmentation (MA only)
     
     # Training hyperparameters
-    batch_size = 128              # Tiny patches allow for a massive batch size to stabilise gradients
-    learning_rate = 5e-4          # Slightly higher LR as we are training from scratch
+    # CHANGED: Reduced from 128 to 16 to fit 256x256 patches on P100
+    batch_size = 16              
+    
+    learning_rate = 5e-4          
     num_epochs = 100
     
     # Hardware
