@@ -26,34 +26,23 @@ from segmentation.loss import HybridLoss
 def filter_noise(mask_tensor, min_size=5, max_size=150):
     """
     Removes connected components smaller than min_size or larger than max_size.
-    Expects mask_tensor to be (C, H, W) or (1, H, W).
     Returns cleaned tensor on the same device.
     """
-    # Convert to numpy for OpenCV
     mask_np = mask_tensor.cpu().numpy().astype(np.uint8)
-    
-    # Handle batch/channel dims if necessary (assuming batch=1 for validation here)
-    if mask_np.ndim == 3:
-        mask_np = mask_np[0] 
+    if mask_np.ndim == 3: mask_np = mask_np[0] 
 
     num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(mask_np, connectivity=8)
     
     output_mask = np.zeros_like(mask_np)
-    for i in range(1, num_labels):  # Skip background (0)
+    for i in range(1, num_labels):
         area = stats[i, cv2.CC_STAT_AREA]
-        # IDRiD MAs are usually between 5 and 100 pixels
         if min_size < area < max_size:
             output_mask[labels == i] = 1
             
-    # Convert back to tensor
     return torch.from_numpy(output_mask).unsqueeze(0).to(mask_tensor.device)
 
 
 class EnhanceGreenChanneld(MapTransform):
-    """
-    Extracts the Green Channel and applies CLAHE + Gamma Correction.
-    Returns a single-channel tensor (1, H, W) to minimise spectral noise.
-    """
     def __init__(self, keys, gamma=0.8, clip_limit=2.0, tile_grid_size=(8,8), allow_missing_keys=False):
         super().__init__(keys, allow_missing_keys)
         self.gamma, self.clip_limit, self.tile_grid_size = gamma, clip_limit, tile_grid_size
@@ -67,29 +56,18 @@ class EnhanceGreenChanneld(MapTransform):
             if isinstance(img, torch.Tensor): img = img.numpy()
             if img.ndim == 3 and img.shape[0] == 3: img = np.transpose(img, (1, 2, 0))
             
-            # 1. Extract Green Channel (Index 1 in RGB)
             green = img[:, :, 1] if img.ndim == 3 else img 
-
-            # 2. Normalisation
             if green.max() > 1: green = green / 255.0
-                
-            # 3. Gamma Correction
             green = np.power(green, self.gamma)
             
-            # 4. CLAHE
             green_uint8 = (green * 255).astype(np.uint8)
             green_clahe = clahe.apply(green_uint8)
             green_final = green_clahe.astype(np.float32) / 255.0
             
-            # Return as Single Channel Tensor (1, H, W)
             d[key] = torch.tensor(green_final).unsqueeze(0)
-            
         return d
 
 class LoadMAd(MapTransform):
-    """
-    Specialised loader that only retrieves Microaneurysm (MA) masks.
-    """
     def __init__(self, keys, allow_missing_keys=False):
         super().__init__(keys, allow_missing_keys)
         self.reader = PILReader()
@@ -109,21 +87,16 @@ class LoadMAd(MapTransform):
 def get_micro_transforms():
     train_tfm = Compose([
         LoadImaged(keys=["image"], reader=PILReader), 
-        
         DeleteItemsd(keys=["he", "ex"]), 
-        
         EnhanceGreenChanneld(keys=["image"]),
         LoadMAd(keys=["ma"]),
-        
         RandCropByPosNegLabeld(
             keys=["image", "label"],
             label_key="label",
             spatial_size=MicroConfig.patch_size,  
-            # CHANGED: Reduced from pos=8 to pos=2 to reduce false positives
             pos=2, neg=1, 
             num_samples=4 
         ),
-        
         RandRotate90d(keys=["image", "label"], prob=0.5, spatial_axes=[0, 1]),
         RandFlipd(keys=["image", "label"], prob=0.5, spatial_axis=0),
     ])
@@ -137,6 +110,10 @@ def get_micro_transforms():
     return train_tfm, val_tfm
 
 if __name__ == "__main__":
+    # --- RESTART KERNEL FIX ---
+    torch.cuda.empty_cache()
+    # --------------------------
+
     print(f"Starting Micro-Specialist Training (MA Focus)...")
     train_files = get_monai_data_dicts(MicroConfig.train_images_dir, MicroConfig.train_masks_dir)
     val_files = get_monai_data_dicts(MicroConfig.val_images_dir, MicroConfig.val_masks_dir)
@@ -149,12 +126,14 @@ if __name__ == "__main__":
     loss_func = HybridLoss(alpha=0.3, beta=0.7)
     optimiser = optim.Adam(model.parameters(), lr=MicroConfig.learning_rate)
     
-    # CHANGED: Added Scheduler
+    # Gradient Accumulation Calculation
+    accumulation_steps = MicroConfig.virtual_batch_size // MicroConfig.batch_size
+    
     scheduler = optim.lr_scheduler.OneCycleLR(
         optimiser, 
         max_lr=1e-3, 
         epochs=MicroConfig.num_epochs, 
-        steps_per_epoch=len(train_loader)
+        steps_per_epoch=len(train_loader) // accumulation_steps # Adjust steps for accumulation
     )
 
     dice_metric = DiceMetric(include_background=True, reduction="mean_batch") 
@@ -166,34 +145,40 @@ if __name__ == "__main__":
         optimiser.zero_grad()
         progress = tqdm(train_loader, desc=f"Epoch {epoch+1}")
         
-        for batch in progress:
+        # Training Loop
+        for i, batch in enumerate(progress):
             inputs, labels = batch["image"].to(MicroConfig.device).float(), batch["label"].to(MicroConfig.device)
+            
             with torch.amp.autocast('cuda'):
-                loss = loss_func(model(inputs), labels)
+                outputs = model(inputs)
+                # Normalize loss by accumulation steps
+                loss = loss_func(outputs, labels) / accumulation_steps
             
             scaler.scale(loss).backward()
-            scaler.step(optimiser)
-            scaler.update()
             
-            # CHANGED: Step scheduler every batch
-            scheduler.step()
+            # --- GRADIENT ACCUMULATION STEP ---
+            if (i + 1) % accumulation_steps == 0:
+                scaler.step(optimiser)
+                scaler.update()
+                scheduler.step()
+                optimiser.zero_grad()
+            # ----------------------------------
             
-            optimiser.zero_grad()
-            progress.set_postfix({"loss": f"{loss.item():.4f}"})
+            # Multiply loss back for display purposes
+            progress.set_postfix({"loss": f"{loss.item() * accumulation_steps:.4f}"})
 
+        # Validation Loop
         model.eval()
         with torch.no_grad():
             for val_batch in val_loader:
                 v_in = val_batch["image"].to(MicroConfig.device).float()
                 v_lab = val_batch["label"].to(MicroConfig.device)
-                
-                # Sliding window inference
                 v_out = sliding_window_inference(v_in, MicroConfig.patch_size, 32, model)
                 
-                # CHANGED: Apply noise filtering
+                # Binarize
                 pred_binary = (torch.sigmoid(v_out) > 0.5).float()
                 
-                # Apply post-processing to clean up noise
+                # Post-processing noise filter
                 pred_cleaned = filter_noise(pred_binary, min_size=5, max_size=150)
                 
                 dice_metric(y_pred=pred_cleaned, y=v_lab)
