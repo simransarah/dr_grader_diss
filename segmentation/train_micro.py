@@ -19,41 +19,25 @@ from monai.transforms import (
 
 from segmentation.config_micro import MicroConfig
 from segmentation.dataset import get_monai_data_dicts
-from segmentation.model import Attention_UNet
-from segmentation.loss import HybridLoss
+# IMPORT THE NEW MODEL
+from segmentation.model import CBAM_AG_UNet
 
 # --- Helper Function for Post-Processing ---
 def filter_noise(mask_tensor, min_size=5, max_size=150):
-    """
-    Removes connected components smaller than min_size or larger than max_size.
-    Expects mask_tensor to be (B, C, H, W) or (C, H, W).
-    """
-    # 1. Move to CPU and convert to numpy
     mask_np = mask_tensor.detach().cpu().numpy().astype(np.uint8)
-    
-    # 2. Force it into a 2D shape (H, W) by removing all singleton dimensions
-    # This is critical for OpenCV compatibility
     mask_np = np.squeeze(mask_np) 
-    
     if mask_np.ndim != 2:
-        # If it's still not 2D (e.g. multi-channel), take the first channel
         mask_np = mask_np[0] if mask_np.ndim > 2 else mask_np
 
-    # 3. Run connected components
     num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(mask_np, connectivity=8)
-    
     output_mask = np.zeros_like(mask_np)
     for i in range(1, num_labels):
         area = stats[i, cv2.CC_STAT_AREA]
         if min_size < area < max_size:
             output_mask[labels == i] = 1
             
-    # 4. Convert back to Tensor and restore (C, H, W) format for MONAI metrics
-    # MONAI DiceMetric usually expects [Batch, Channel, H, W] or [Channel, H, W]
     cleaned_tensor = torch.from_numpy(output_mask).unsqueeze(0).to(mask_tensor.device).float()
-    
     return cleaned_tensor
-
 
 class EnhanceGreenChanneld(MapTransform):
     def __init__(self, keys, gamma=0.8, clip_limit=2.0, tile_grid_size=(8,8), allow_missing_keys=False):
@@ -123,11 +107,9 @@ def get_micro_transforms():
     return train_tfm, val_tfm
 
 if __name__ == "__main__":
-    # --- RESTART KERNEL FIX ---
     torch.cuda.empty_cache()
-    # --------------------------
-
-    print(f"Starting Micro-Specialist Training (MA Focus)...")
+    print(f"Starting CBAM-AG-UNet Training (MA Focus)...")
+    
     train_files = get_monai_data_dicts(MicroConfig.train_images_dir, MicroConfig.train_masks_dir)
     val_files = get_monai_data_dicts(MicroConfig.val_images_dir, MicroConfig.val_masks_dir)
     train_tfm, val_tfm = get_micro_transforms()
@@ -135,18 +117,17 @@ if __name__ == "__main__":
     train_loader = DataLoader(Dataset(train_files, train_tfm), batch_size=MicroConfig.batch_size, shuffle=True, num_workers=2)
     val_loader = DataLoader(Dataset(val_files, val_tfm), batch_size=1, num_workers=0)
 
-    model = Attention_UNet(in_channels=1, out_channels=1).to(MicroConfig.device)
-    loss_func = HybridLoss(alpha=0.3, beta=0.7)
+    # MODEL: New CBAM-AG-UNet
+    model = CBAM_AG_UNet(in_channels=1, out_channels=1).to(MicroConfig.device)
+    
+    # LOSS: Paper uses Cross Entropy (BCEWithLogitsLoss covers this for binary)
+    loss_func = torch.nn.BCEWithLogitsLoss()
+    
     optimiser = optim.Adam(model.parameters(), lr=MicroConfig.learning_rate)
     
-    # Gradient Accumulation Calculation
-    accumulation_steps = MicroConfig.virtual_batch_size // MicroConfig.batch_size
-    
-    scheduler = optim.lr_scheduler.OneCycleLR(
-        optimiser, 
-        max_lr=1e-3, 
-        epochs=MicroConfig.num_epochs, 
-        steps_per_epoch=len(train_loader) // accumulation_steps # Adjust steps for accumulation
+    # SCHEDULER: Paper uses ReduceLROnPlateau
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+        optimiser, mode='min', factor=0.5, patience=5, min_lr=1e-5
     )
 
     dice_metric = DiceMetric(include_background=True, reduction="mean_batch") 
@@ -156,53 +137,53 @@ if __name__ == "__main__":
     for epoch in range(MicroConfig.num_epochs):
         model.train()
         optimiser.zero_grad()
+        epoch_loss = 0
         progress = tqdm(train_loader, desc=f"Epoch {epoch+1}")
         
-        # Training Loop
-        for i, batch in enumerate(progress):
+        for batch in progress:
             inputs, labels = batch["image"].to(MicroConfig.device).float(), batch["label"].to(MicroConfig.device)
             
             with torch.amp.autocast('cuda'):
                 outputs = model(inputs)
-                # Normalize loss by accumulation steps
-                loss = loss_func(outputs, labels) / accumulation_steps
+                loss = loss_func(outputs, labels)
             
             scaler.scale(loss).backward()
+            scaler.step(optimiser)
+            scaler.update()
+            optimiser.zero_grad()
             
-            # --- GRADIENT ACCUMULATION STEP ---
-            if (i + 1) % accumulation_steps == 0:
-                scaler.step(optimiser)
-                scaler.update()
-                scheduler.step()
-                optimiser.zero_grad()
-            # ----------------------------------
-            
-            # Multiply loss back for display purposes
-            progress.set_postfix({"loss": f"{loss.item() * accumulation_steps:.4f}"})
+            epoch_loss += loss.item()
+            progress.set_postfix({"loss": f"{loss.item():.4f}"})
 
-        # Validation Loop
+        # Update Scheduler based on Loss
+        avg_loss = epoch_loss / len(train_loader)
+        scheduler.step(avg_loss)
+
+        # Validation
         model.eval()
         with torch.no_grad():
             for val_batch in val_loader:
                 v_in = val_batch["image"].to(MicroConfig.device).float()
                 v_lab = val_batch["label"].to(MicroConfig.device)
                 
-                # Inference
+                # Sliding window inference
                 v_out = sliding_window_inference(v_in, MicroConfig.patch_size, 32, model)
                 pred_binary = (torch.sigmoid(v_out) > 0.5).float()
                 
-                # Apply noise filter (Process one image at a time if batch > 1)
-                # Since your val_loader batch_size is 1, pred_binary[0] is safe
-                pred_cleaned = filter_noise(pred_binary[0], min_size=5, max_size=150)
+                # Post-processing
+                pred_cleaned = filter_noise(pred_binary, min_size=5, max_size=150)
                 
-                # Add batch dimension back for the DiceMetric
-                dice_metric(y_pred=pred_cleaned.unsqueeze(0), y=v_lab)
+                # Add batch dim for DiceMetric if needed
+                if pred_cleaned.ndim == 3:
+                     pred_cleaned = pred_cleaned.unsqueeze(0)
+
+                dice_metric(y_pred=pred_cleaned, y=v_lab)
             
             score = dice_metric.aggregate().item() 
             dice_metric.reset()
-            print(f"Epoch {epoch+1} Results: MA Dice: {score:.4f}")
+            print(f"Epoch {epoch+1} Results: MA Dice: {score:.4f} | Avg Loss: {avg_loss:.4f}")
             
             if score > best_dice:
                 best_dice = score
-                torch.save(model.state_dict(), "/kaggle/working/best_micro_model.pth")
+                torch.save(model.state_dict(), "/kaggle/working/best_cbam_model.pth")
                 print(">>> New Best Model Saved :)")
