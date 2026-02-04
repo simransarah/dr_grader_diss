@@ -22,6 +22,33 @@ from segmentation.dataset import get_monai_data_dicts
 from segmentation.model import Attention_UNet
 from segmentation.loss import HybridLoss
 
+# --- Helper Function for Post-Processing ---
+def filter_noise(mask_tensor, min_size=5, max_size=150):
+    """
+    Removes connected components smaller than min_size or larger than max_size.
+    Expects mask_tensor to be (C, H, W) or (1, H, W).
+    Returns cleaned tensor on the same device.
+    """
+    # Convert to numpy for OpenCV
+    mask_np = mask_tensor.cpu().numpy().astype(np.uint8)
+    
+    # Handle batch/channel dims if necessary (assuming batch=1 for validation here)
+    if mask_np.ndim == 3:
+        mask_np = mask_np[0] 
+
+    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(mask_np, connectivity=8)
+    
+    output_mask = np.zeros_like(mask_np)
+    for i in range(1, num_labels):  # Skip background (0)
+        area = stats[i, cv2.CC_STAT_AREA]
+        # IDRiD MAs are usually between 5 and 100 pixels
+        if min_size < area < max_size:
+            output_mask[labels == i] = 1
+            
+    # Convert back to tensor
+    return torch.from_numpy(output_mask).unsqueeze(0).to(mask_tensor.device)
+
+
 class EnhanceGreenChanneld(MapTransform):
     """
     Extracts the Green Channel and applies CLAHE + Gamma Correction.
@@ -33,7 +60,6 @@ class EnhanceGreenChanneld(MapTransform):
 
     def __call__(self, data):
         d = dict(data)
-        # Initialise CLAHE here for multi-processing compatibility
         clahe = cv2.createCLAHE(clipLimit=self.clip_limit, tileGridSize=self.tile_grid_size)
         
         for key in self.keys:
@@ -47,10 +73,10 @@ class EnhanceGreenChanneld(MapTransform):
             # 2. Normalisation
             if green.max() > 1: green = green / 255.0
                 
-            # 3. Gamma Correction (Darkens background to highlight bright MAs)
+            # 3. Gamma Correction
             green = np.power(green, self.gamma)
             
-            # 4. CLAHE (Local Contrast Enhancement)
+            # 4. CLAHE
             green_uint8 = (green * 255).astype(np.uint8)
             green_clahe = clahe.apply(green_uint8)
             green_final = green_clahe.astype(np.float32) / 255.0
@@ -93,8 +119,9 @@ def get_micro_transforms():
             keys=["image", "label"],
             label_key="label",
             spatial_size=MicroConfig.patch_size,  
-            pos=8, neg=1, # Change from 4 to 8
-            num_samples=16 
+            # CHANGED: Reduced from pos=8 to pos=2 to reduce false positives
+            pos=2, neg=1, 
+            num_samples=4 
         ),
         
         RandRotate90d(keys=["image", "label"], prob=0.5, spatial_axes=[0, 1]),
@@ -121,6 +148,15 @@ if __name__ == "__main__":
     model = Attention_UNet(in_channels=1, out_channels=1).to(MicroConfig.device)
     loss_func = HybridLoss(alpha=0.3, beta=0.7)
     optimiser = optim.Adam(model.parameters(), lr=MicroConfig.learning_rate)
+    
+    # CHANGED: Added Scheduler
+    scheduler = optim.lr_scheduler.OneCycleLR(
+        optimiser, 
+        max_lr=1e-3, 
+        epochs=MicroConfig.num_epochs, 
+        steps_per_epoch=len(train_loader)
+    )
+
     dice_metric = DiceMetric(include_background=True, reduction="mean_batch") 
     scaler = torch.amp.GradScaler('cuda')
 
@@ -129,23 +165,43 @@ if __name__ == "__main__":
         model.train()
         optimiser.zero_grad()
         progress = tqdm(train_loader, desc=f"Epoch {epoch+1}")
+        
         for batch in progress:
             inputs, labels = batch["image"].to(MicroConfig.device).float(), batch["label"].to(MicroConfig.device)
             with torch.amp.autocast('cuda'):
                 loss = loss_func(model(inputs), labels)
+            
             scaler.scale(loss).backward()
-            scaler.step(optimiser); scaler.update(); optimiser.zero_grad()
+            scaler.step(optimiser)
+            scaler.update()
+            
+            # CHANGED: Step scheduler every batch
+            scheduler.step()
+            
+            optimiser.zero_grad()
             progress.set_postfix({"loss": f"{loss.item():.4f}"})
 
         model.eval()
         with torch.no_grad():
             for val_batch in val_loader:
-                v_out = sliding_window_inference(val_batch["image"].to(MicroConfig.device).float(), MicroConfig.patch_size, 32, model)
-                dice_metric(y_pred=(torch.sigmoid(v_out) > 0.5).float(), y=val_batch["label"].to(MicroConfig.device))
+                v_in = val_batch["image"].to(MicroConfig.device).float()
+                v_lab = val_batch["label"].to(MicroConfig.device)
+                
+                # Sliding window inference
+                v_out = sliding_window_inference(v_in, MicroConfig.patch_size, 32, model)
+                
+                # CHANGED: Apply noise filtering
+                pred_binary = (torch.sigmoid(v_out) > 0.5).float()
+                
+                # Apply post-processing to clean up noise
+                pred_cleaned = filter_noise(pred_binary, min_size=5, max_size=150)
+                
+                dice_metric(y_pred=pred_cleaned, y=v_lab)
             
             score = dice_metric.aggregate().item() 
             dice_metric.reset()
             print(f"Epoch {epoch+1} Results: MA Dice: {score:.4f}")
+            
             if score > best_dice:
                 best_dice = score
                 torch.save(model.state_dict(), "/kaggle/working/best_micro_model.pth")
