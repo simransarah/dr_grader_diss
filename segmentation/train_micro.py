@@ -26,11 +26,20 @@ from segmentation.loss import HybridLoss
 def filter_noise(mask_tensor, min_size=5, max_size=150):
     """
     Removes connected components smaller than min_size or larger than max_size.
-    Returns cleaned tensor on the same device.
+    Expects mask_tensor to be (B, C, H, W) or (C, H, W).
     """
-    mask_np = mask_tensor.cpu().numpy().astype(np.uint8)
-    if mask_np.ndim == 3: mask_np = mask_np[0] 
+    # 1. Move to CPU and convert to numpy
+    mask_np = mask_tensor.detach().cpu().numpy().astype(np.uint8)
+    
+    # 2. Force it into a 2D shape (H, W) by removing all singleton dimensions
+    # This is critical for OpenCV compatibility
+    mask_np = np.squeeze(mask_np) 
+    
+    if mask_np.ndim != 2:
+        # If it's still not 2D (e.g. multi-channel), take the first channel
+        mask_np = mask_np[0] if mask_np.ndim > 2 else mask_np
 
+    # 3. Run connected components
     num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(mask_np, connectivity=8)
     
     output_mask = np.zeros_like(mask_np)
@@ -39,7 +48,11 @@ def filter_noise(mask_tensor, min_size=5, max_size=150):
         if min_size < area < max_size:
             output_mask[labels == i] = 1
             
-    return torch.from_numpy(output_mask).unsqueeze(0).to(mask_tensor.device)
+    # 4. Convert back to Tensor and restore (C, H, W) format for MONAI metrics
+    # MONAI DiceMetric usually expects [Batch, Channel, H, W] or [Channel, H, W]
+    cleaned_tensor = torch.from_numpy(output_mask).unsqueeze(0).to(mask_tensor.device).float()
+    
+    return cleaned_tensor
 
 
 class EnhanceGreenChanneld(MapTransform):
@@ -173,15 +186,17 @@ if __name__ == "__main__":
             for val_batch in val_loader:
                 v_in = val_batch["image"].to(MicroConfig.device).float()
                 v_lab = val_batch["label"].to(MicroConfig.device)
-                v_out = sliding_window_inference(v_in, MicroConfig.patch_size, 32, model)
                 
-                # Binarize
+                # Inference
+                v_out = sliding_window_inference(v_in, MicroConfig.patch_size, 32, model)
                 pred_binary = (torch.sigmoid(v_out) > 0.5).float()
                 
-                # Post-processing noise filter
-                pred_cleaned = filter_noise(pred_binary, min_size=5, max_size=150)
+                # Apply noise filter (Process one image at a time if batch > 1)
+                # Since your val_loader batch_size is 1, pred_binary[0] is safe
+                pred_cleaned = filter_noise(pred_binary[0], min_size=5, max_size=150)
                 
-                dice_metric(y_pred=pred_cleaned, y=v_lab)
+                # Add batch dimension back for the DiceMetric
+                dice_metric(y_pred=pred_cleaned.unsqueeze(0), y=v_lab)
             
             score = dice_metric.aggregate().item() 
             dice_metric.reset()
