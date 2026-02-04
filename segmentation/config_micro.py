@@ -17,16 +17,14 @@ class MicroConfig:
     
     # Model parameters
     model_type = "attention_unet" 
+    patch_size = (256, 256)       
+    in_channels = 1               
+    out_channels = 1              
     
-    # CHANGED: Increased from 64 to 256 for IDRiD context
-    patch_size = (256, 256)         
-    
-    in_channels = 1               # Green Channel Only (High Contrast)
-    out_channels = 1              # Binary Segmentation (MA only)
-    
-    # Training hyperparameters
-    # CHANGED: Reduced from 128 to 16 to fit 256x256 patches on P100
-    batch_size = 16              
+    # --- MEMORY FIX ---
+    batch_size = 4             # Physical batch size (Fits in VRAM)
+    virtual_batch_size = 16    # Effective batch size (Simulation)
+    # ------------------
     
     learning_rate = 5e-4          
     num_epochs = 100
