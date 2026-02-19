@@ -199,5 +199,6 @@ if __name__ == "__main__":
             
             if mean_val_dice > best_dice:
                 best_dice = mean_val_dice
-                torch.save(model.state_dict(), "best_transfer_model.pth")
+                torch.save(model.state_dict(), "/kaggle/working/best_transfer_model.pth")
+                print(">>> New Best Model Saved :)")
                 print(">>> New Best Model Saved :)")
