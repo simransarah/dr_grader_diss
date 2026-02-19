@@ -2,6 +2,7 @@ import os
 import torch 
 
 class SegmentationConfig:
+    TARGET_LESION = "ex"
     # paths
     root_dir = os.path.join("/kaggle", "input", "idriddata", "data", "IDRiD", "A. Segmentation")
 
@@ -16,7 +17,7 @@ class SegmentationConfig:
     pretrained = True
     patch_size = (512, 512)
     in_channels = 3  
-    out_channels = 3 
+    out_channels = 1
     batch_size = 4   
     virtual_batch_size = 16 
     learning_rate = 1e-4
