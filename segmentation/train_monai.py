@@ -143,8 +143,8 @@ if __name__ == "__main__":
     
     train_tfm, val_tfm = get_transforms(target)
     
-    train_loader = DataLoader(Dataset(train_files, train_tfm), batch_size=SegmentationConfig.batch_size, shuffle=True, num_workers=2)
-    val_loader = DataLoader(Dataset(val_files, val_tfm), batch_size=1, num_workers=0)
+    train_loader = DataLoader(Dataset(train_files, train_tfm), batch_size=SegmentationConfig.batch_size, shuffle=True, num_workers=4, pin_memory=True, persistent_workers=True)
+    val_loader = DataLoader(Dataset(val_files, val_tfm), batch_size=1, num_workers=2, pin_memory=True, persistent_workers=True)
 
     # 1. Initialize Pre-trained SMP Model
     model = smp.Unet(
@@ -154,7 +154,10 @@ if __name__ == "__main__":
         classes=1,                      
         decoder_attention_type="scse"   
     ).to(SegmentationConfig.device)
-    
+
+    if torch.__version__ >= "2.0":
+        model = torch.compile(model, mode="reduce-overhead")
+        
     # 2. Initialize Stable MONAI Loss with Dynamic Gamma
     gamma_val = 3.0 if target in ["ma", "he"] else 2.0
     loss_func = DiceFocalLoss(
@@ -196,7 +199,7 @@ if __name__ == "__main__":
             progress.set_postfix({"loss": f"{loss.item() * accumulation_steps:.4f}"})
 
         model.eval()
-        with torch.no_grad():
+        with torch.no_grad(), torch.amp.autocast('cuda'):
             for val_batch in val_loader:
                 v_in, v_lab = val_batch["image"].to(SegmentationConfig.device).float(), val_batch["label"].to(SegmentationConfig.device)
                 v_out = sliding_window_inference(v_in, SegmentationConfig.patch_size, 4, model, overlap = 0.5)
@@ -211,7 +214,7 @@ if __name__ == "__main__":
             
             print(f"Epoch {epoch+1} Results: {target.upper()} Dice: {val_dice:.4f}")
             
-            if val_dice > best_dice:
+            if val_dice > best_dice + 0.001:
                 best_dice = val_dice
                 # Save the model with the target lesion name
                 torch.save(model.state_dict(), f"new_best_{target}_model.pth")
