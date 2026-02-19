@@ -214,5 +214,5 @@ if __name__ == "__main__":
             if val_dice > best_dice:
                 best_dice = val_dice
                 # Save the model with the target lesion name
-                torch.save(model.state_dict(), f"best_{target}_model.pth")
+                torch.save(model.state_dict(), f"new_best_{target}_model.pth")
                 print(f">>> New Best {target.upper()} Model Saved :)")
