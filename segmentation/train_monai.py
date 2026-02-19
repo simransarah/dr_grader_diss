@@ -109,7 +109,7 @@ def get_transforms(target_lesion):
     elif target_lesion == "he":
         pos_ratio = 3
     else: # "ex"
-        pos_ratio = 1
+        pos_ratio = 3
 
     train_tfm = Compose([
         LoadImaged(keys=["image"], reader=PILReader), 
