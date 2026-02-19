@@ -24,7 +24,10 @@ def train_one_epoch(loader, model, optimiser, loss_function, scaler):
 
     for batch_index, (data, targets) in enumerate(loop):
         data = data.to(GradingConfig.device)
-        targets = targets.to(device=GradingConfig.device)
+        targets = targets.to(GradingConfig.device)
+
+        # zero before forward to avoid gradient accumulation across batches
+        optimiser.zero_grad(set_to_none=True)
 
         # forward
         with torch.amp.autocast('cuda'):
@@ -32,7 +35,6 @@ def train_one_epoch(loader, model, optimiser, loss_function, scaler):
             loss = loss_function(predictions, targets)
 
         # backward
-        optimiser.zero_grad()
         scaler.scale(loss).backward()
         scaler.step(optimiser)
         scaler.update()
@@ -51,14 +53,14 @@ def validate(loader, model, loss_function):
 
     with torch.no_grad():
         for x, y in loader:
-            x = x.to(device=GradingConfig.device)
-            y = y.to(device=GradingConfig.device)
+            x = x.to(GradingConfig.device)
+            y = y.to(GradingConfig.device)
 
             predictions = model(x)
             loss = loss_function(predictions, y)
             val_loss += loss.item()
-            all_predictions.append(predictions)
-            all_targets.append(y)
+            all_predictions.append(predictions.cpu()) 
+            all_targets.append(y.cpu())
 
     qwk = quadratic_weighted_kappa(torch.cat(all_predictions), torch.cat(all_targets))
     model.train()
@@ -68,14 +70,16 @@ def validate(loader, model, loss_function):
 if __name__ == "__main__":
     transforms = get_transforms()
 
-    train_dataset = GradingDataset(GradingConfig.train_images_dir, 
-                                   GradingConfig.train_maps_dir,
-                                   GradingConfig.train_labels_file,
-                                   transforms)
-    validation_dataset = GradingDataset(GradingConfig.val_images_dir,
-                                        GradingConfig.val_maps_dir,
-                                        GradingConfig.val_labels_file,
-                                        transforms)
+    train_dataset = GradingDataset(
+        GradingConfig.train_maps_dir,
+        GradingConfig.train_labels_file,
+        transforms
+    )
+    validation_dataset = GradingDataset(
+        GradingConfig.val_maps_dir,
+        GradingConfig.val_labels_file,
+        transforms
+    )
     
     train_loader = DataLoader(
         train_dataset, 
