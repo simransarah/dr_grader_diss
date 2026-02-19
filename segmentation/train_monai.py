@@ -30,10 +30,10 @@ class EnhanceFundusImaged(MapTransform):
         self.clip_limit = clip_limit
         self.tile_grid_size = tile_grid_size
         self.lut = np.array([((i / 255.0) ** gamma) * 255 for i in range(256)]).astype("uint8")
+        self.clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_grid_size)
 
     def __call__(self, data):
         d = dict(data)
-        clahe = cv2.createCLAHE(clipLimit=self.clip_limit, tileGridSize=self.tile_grid_size)
         
         for key in self.keys:
             img = d[key]
@@ -54,7 +54,7 @@ class EnhanceFundusImaged(MapTransform):
                 green_uint8 = green.astype(np.uint8)
 
             green_gamma = cv2.LUT(green_uint8, self.lut)
-            green_clahe = clahe.apply(green_gamma)
+            green_clahe = self.clahe.apply(green_gamma)
             green_final = green_clahe.astype(np.float32) / 255.0
             
             if img.ndim == 3 and img.shape[-1] == 3:
