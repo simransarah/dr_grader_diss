@@ -149,7 +149,6 @@ if __name__ == "__main__":
     model = build_model(
         encoder_weights="imagenet" if SegmentationConfig.pretrained else None,
     ).to(SegmentationConfig.device)
-
         
 
     gamma_val = 3.0 if target in ["ma", "he"] else 2.0
@@ -184,10 +183,10 @@ if __name__ == "__main__":
             
             scaler.scale(loss).backward()
             
-            if (i + 1) % accumulation_steps == 0:
+            if (i + 1) % accumulation_steps == 0 or (i + 1) == len(train_loader):
                 scaler.step(optimiser)
                 scaler.update()
-                optimiser.zero_grad()
+                optimiser.zero_grad(set_to_none=True)
             
             progress.set_postfix({"loss": f"{loss.item() * accumulation_steps:.4f}"})
 
