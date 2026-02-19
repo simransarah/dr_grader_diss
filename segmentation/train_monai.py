@@ -199,7 +199,7 @@ if __name__ == "__main__":
         with torch.no_grad():
             for val_batch in val_loader:
                 v_in, v_lab = val_batch["image"].to(SegmentationConfig.device).float(), val_batch["label"].to(SegmentationConfig.device)
-                v_out = sliding_window_inference(v_in, SegmentationConfig.patch_size, 4, model)
+                v_out = sliding_window_inference(v_in, SegmentationConfig.patch_size, 4, model, overlap = 0.5)
                 v_out = (torch.sigmoid(v_out) > 0.5).float()
                 dice_metric(y_pred=v_out, y=v_lab)
             
