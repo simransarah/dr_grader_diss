@@ -154,8 +154,6 @@ if __name__ == "__main__":
         freeze_encoder=True,
     ).to(SegmentationConfig.device)
 
-    if torch.__version__ >= "2.0":
-        model = torch.compile(model, mode="reduce-overhead")
         
 
     gamma_val = 3.0 if target in ["ma", "he"] else 2.0
