@@ -5,7 +5,7 @@ import numpy as np
 import torch
 import torch.optim as optim
 from tqdm import tqdm
-import segmentation_models_pytorch as smp
+from segmentation.model import EfficientNetB3_scSE_UNet
 
 from monai.data import DataLoader, Dataset, PILReader
 from monai.metrics import DiceMetric
@@ -146,19 +146,18 @@ if __name__ == "__main__":
     train_loader = DataLoader(Dataset(train_files, train_tfm), batch_size=SegmentationConfig.batch_size, shuffle=True, num_workers=4, pin_memory=True, persistent_workers=True)
     val_loader = DataLoader(Dataset(val_files, val_tfm), batch_size=1, num_workers=2, pin_memory=True, persistent_workers=True)
 
-    # 1. Initialize Pre-trained SMP Model
-    model = smp.Unet(
-        encoder_name=SegmentationConfig.backbone, 
-        encoder_weights="imagenet" if SegmentationConfig.pretrained else None,     
+    WARMUP_EPOCHS = 10
+    model = EfficientNetB3_scSE_UNet(
         in_channels=3,
-        classes=1,                      
-        decoder_attention_type="scse"   
+        out_channels=1,
+        encoder_weights="imagenet" if SegmentationConfig.pretrained else None,
+        freeze_encoder=True,
     ).to(SegmentationConfig.device)
 
     if torch.__version__ >= "2.0":
         model = torch.compile(model, mode="reduce-overhead")
         
-    # 2. Initialize Stable MONAI Loss with Dynamic Gamma
+
     gamma_val = 3.0 if target in ["ma", "he"] else 2.0
     loss_func = DiceFocalLoss(
         include_background=False, 
@@ -176,9 +175,15 @@ if __name__ == "__main__":
 
     best_dice = -1
     
-    for epoch in range(SegmentationConfig.num_epochs):
+     for epoch in range(SegmentationConfig.num_epochs):
+        if epoch == WARMUP_EPOCHS:
+            model.freeze_encoder(False)
+            for pg in optimiser.param_groups:
+                pg['lr'] = SegmentationConfig.learning_rate * 0.1
+            print(f">>> Warm-up complete. Encoder unfrozen.")
+
         model.train()
-        optimiser.zero_grad()
+        optimiser.zero_grad(set_to_none=True)
         
         progress = tqdm(train_loader, desc=f"Epoch {epoch+1}")
         for i, batch in enumerate(progress):
