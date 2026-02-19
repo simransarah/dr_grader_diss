@@ -5,7 +5,7 @@ import numpy as np
 import torch
 import torch.optim as optim
 from tqdm import tqdm
-from segmentation.model import EfficientNetB3_scSE_UNet
+from segmentation.model import build_model
 
 from monai.data import DataLoader, Dataset, PILReader
 from monai.metrics import DiceMetric
@@ -146,12 +146,8 @@ if __name__ == "__main__":
     train_loader = DataLoader(Dataset(train_files, train_tfm), batch_size=SegmentationConfig.batch_size, shuffle=True, num_workers=4, pin_memory=True, persistent_workers=True)
     val_loader = DataLoader(Dataset(val_files, val_tfm), batch_size=1, num_workers=2, pin_memory=True, persistent_workers=True)
 
-    WARMUP_EPOCHS = 10
-    model = EfficientNetB3_scSE_UNet(
-        in_channels=3,
-        out_channels=1,
+    model = build_model(
         encoder_weights="imagenet" if SegmentationConfig.pretrained else None,
-        freeze_encoder=True,
     ).to(SegmentationConfig.device)
 
         
@@ -174,12 +170,6 @@ if __name__ == "__main__":
     best_dice = -1
     
     for epoch in range(SegmentationConfig.num_epochs):
-        if epoch == WARMUP_EPOCHS:
-            model.freeze_encoder(False)
-            for pg in optimiser.param_groups:
-                pg['lr'] = SegmentationConfig.learning_rate * 0.1
-            print(f">>> Warm-up complete. Encoder unfrozen.")
-
         model.train()
         optimiser.zero_grad(set_to_none=True)
         
