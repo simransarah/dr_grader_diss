@@ -2,7 +2,7 @@ import os
 import torch 
 
 class SegmentationConfig:
-    TARGET_LESION = "ex"
+    TARGET_LESION = "he"
     # paths
     root_dir = os.path.join("/kaggle", "input", "idriddata", "data", "IDRiD", "A. Segmentation")
 
@@ -15,7 +15,7 @@ class SegmentationConfig:
     # model parameters
     backbone = "efficientnet-b3"
     pretrained = True
-    patch_size = (512, 512)
+    patch_size = (128, 128)
     in_channels = 3  
     out_channels = 1
     batch_size = 4   
