@@ -175,7 +175,7 @@ if __name__ == "__main__":
 
     best_dice = -1
     
-     for epoch in range(SegmentationConfig.num_epochs):
+    for epoch in range(SegmentationConfig.num_epochs):
         if epoch == WARMUP_EPOCHS:
             model.freeze_encoder(False)
             for pg in optimiser.param_groups:
