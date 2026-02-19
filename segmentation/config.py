@@ -25,5 +25,5 @@ class SegmentationConfig:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # data augmentation parameters
-    clahe_probability = 1.0 
+    clahe_probability = 1 
     grid_distortion_probability = 0.5

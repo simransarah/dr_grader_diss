@@ -20,7 +20,7 @@ from monai.transforms import (
 
 from segmentation.config import SegmentationConfig
 from segmentation.dataset import get_monai_data_dicts
-from segmentation.model import Transfer_UNet
+from segmentation.model import CBAM_AttentionUNet
 from segmentation.loss import HybridLoss
 
 class EnhanceFundusImaged(MapTransform):
@@ -29,6 +29,7 @@ class EnhanceFundusImaged(MapTransform):
         self.gamma = gamma
         self.clip_limit = clip_limit
         self.tile_grid_size = tile_grid_size
+        self.lut = np.array([((i / 255.0) ** gamma) * 255 for i in range(256)]).astype("uint8")
 
     def __call__(self, data):
         d = dict(data)
@@ -51,15 +52,14 @@ class EnhanceFundusImaged(MapTransform):
                 green = img 
 
           
-            if green.max() > 1:
-                green = green / 255.0
-                
-            # gamma correction
-            green = np.power(green, self.gamma)
-            
-            # CLAHE
-            green_uint8 = (green * 255).astype(np.uint8)
-            green_clahe = clahe.apply(green_uint8)
+            if green.max() > 1.0:
+                green_uint8 = (green * 255).astype(np.uint8)
+            else:
+                green_uint8 = green.astype(np.uint8)
+
+            green_gamma = cv2.LUT(green_uint8, self.lut)
+            green_clahe = clahe.apply(green_gamma)
+
             green_final = green_clahe.astype(np.float32) / 255.0
             
             # reconstruction of RGB for EfficientNet compatibility
@@ -143,10 +143,9 @@ if __name__ == "__main__":
     train_loader = DataLoader(Dataset(train_files, train_tfm), batch_size=SegmentationConfig.batch_size, shuffle=True, num_workers=2)
     val_loader = DataLoader(Dataset(val_files, val_tfm), batch_size=1, num_workers=0)
 
-    model = Transfer_UNet(
-        num_classes=SegmentationConfig.num_classes,
-        backbone=SegmentationConfig.backbone,
-        pretrained=SegmentationConfig.pretrained
+    model = CBAM_AttentionUNet(
+        num_classes=3,
+        out_channels=SegmentationConfig.num_classes,
     ).to(SegmentationConfig.device)
     
     loss_func = HybridLoss(alpha=0.3, beta=0.7)
