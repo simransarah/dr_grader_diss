@@ -5,12 +5,10 @@ import numpy as np
 import torch
 import torch.optim as optim
 from tqdm import tqdm
-from segmentation.model import build_model
-
 from monai.data import DataLoader, Dataset, PILReader
+from monai.losses import DiceFocalLoss
 from monai.metrics import DiceMetric
 from monai.inferers import sliding_window_inference
-from monai.losses import DiceFocalLoss
 from monai.transforms import (
     Compose, 
     LoadImaged, 
@@ -22,6 +20,7 @@ from monai.transforms import (
 
 from segmentation.config import SegmentationConfig
 from segmentation.dataset import get_monai_data_dicts
+from segmentation.model import build_model
 
 class EnhanceFundusImaged(MapTransform):
     def __init__(self, keys, gamma=0.8, clip_limit=2.0, tile_grid_size=(8,8), allow_missing_keys=False):
@@ -30,6 +29,7 @@ class EnhanceFundusImaged(MapTransform):
         self.clip_limit = clip_limit
         self.tile_grid_size = tile_grid_size
         self.lut = np.array([((i / 255.0) ** gamma) * 255 for i in range(256)]).astype("uint8")
+        # created once per worker to avoid per-sample overhead
         self.clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_grid_size)
 
     def __call__(self, data):
@@ -40,9 +40,11 @@ class EnhanceFundusImaged(MapTransform):
             if isinstance(img, torch.Tensor):
                 img = img.numpy()
             
+            # HWC for OpenCV processing
             if img.ndim == 3 and img.shape[0] == 3:
                 img = np.transpose(img, (1, 2, 0))
             
+            # green channel extraction
             if img.ndim == 3:
                 green = img[:, :, 1]
             else:
@@ -55,8 +57,10 @@ class EnhanceFundusImaged(MapTransform):
 
             green_gamma = cv2.LUT(green_uint8, self.lut)
             green_clahe = self.clahe.apply(green_gamma)
+
             green_final = green_clahe.astype(np.float32) / 255.0
             
+            # reconstruction of RGB for EfficientNet compatibility
             if img.ndim == 3 and img.shape[-1] == 3:
                 img[:, :, 1] = green_final
             else:
@@ -76,7 +80,7 @@ class LoadTargetLesiond(MapTransform):
         d = dict(data)
         spatial_shape = d['image'].shape[1:] 
 
-        # Only load the targeted lesion
+        # only load the targeted lesion
         if d.get(self.target_lesion) is not None:
             mask_obj = self.reader.read(d[self.target_lesion])
             mask_arr, _ = self.reader.get_data(mask_obj)
@@ -90,12 +94,13 @@ class LoadTargetLesiond(MapTransform):
                 else:
                     mask_tsr = mask_tsr.squeeze()
         else:
+            # no annotation for this lesion type — return empty mask
             mask_tsr = torch.zeros(spatial_shape, dtype=torch.float32)
 
-        # Add channel dimension to make it [1, H, W]
+        # add channel dimension to make it [1, H, W]
         d['label'] = (mask_tsr.unsqueeze(0) > 0).float()
 
-        # Delete path keys so MONAI DataLoader doesn't crash trying to load them
+        # delete path keys so MONAI DataLoader doesn't crash trying to load them
         for key in ["ma", "he", "ex"]:
             if key in d:
                 del d[key] 
@@ -103,7 +108,7 @@ class LoadTargetLesiond(MapTransform):
         return d
 
 def get_transforms(target_lesion):
-    # Dynamically adjust sampling rates based on lesion sparsity
+    # dynamically adjust sampling rates based on lesion sparsity
     if target_lesion == "ma":
         pos_ratio = 9
     elif target_lesion == "he":
@@ -133,7 +138,6 @@ def get_transforms(target_lesion):
     ])
     return train_tfm, val_tfm
 
-
 if __name__ == "__main__":
     target = SegmentationConfig.TARGET_LESION
     print(f"Starting Specialist Training for: {target.upper()} using {SegmentationConfig.backbone}...")
@@ -149,8 +153,8 @@ if __name__ == "__main__":
     model = build_model(
         encoder_weights="imagenet" if SegmentationConfig.pretrained else None,
     ).to(SegmentationConfig.device)
-        
 
+    # higher gamma for sparse lesions to focus harder on rare positives
     gamma_val = 3.0 if target in ["ma", "he"] else 2.0
     loss_func = DiceFocalLoss(
         include_background=False, 
@@ -166,9 +170,23 @@ if __name__ == "__main__":
     scaler = torch.amp.GradScaler('cuda')
     accumulation_steps = SegmentationConfig.virtual_batch_size // SegmentationConfig.batch_size
 
+    checkpoint_path = os.path.join(SegmentationConfig.checkpoint_dir, f"{target}_checkpoint.pth")
+    best_model_path = os.path.join(SegmentationConfig.checkpoint_dir, f"best_{target}_model.pth")
+
+    start_epoch = 0
     best_dice = -1
-    
-    for epoch in range(SegmentationConfig.num_epochs):
+
+    if os.path.exists(checkpoint_path):
+        print(f"Resuming from checkpoint: {checkpoint_path}")
+        ckpt = torch.load(checkpoint_path, map_location=SegmentationConfig.device)
+        model.load_state_dict(ckpt["model"])
+        optimiser.load_state_dict(ckpt["optimiser"])
+        scaler.load_state_dict(ckpt["scaler"])
+        start_epoch = ckpt["epoch"]
+        best_dice = ckpt["best_dice"]
+        print(f"Resumed at epoch {start_epoch + 1}  |  best Dice so far: {best_dice:.4f}")
+
+    for epoch in range(start_epoch, SegmentationConfig.num_epochs):
         model.train()
         optimiser.zero_grad(set_to_none=True)
         
@@ -183,6 +201,7 @@ if __name__ == "__main__":
             
             scaler.scale(loss).backward()
             
+            # also catches the final partial batch
             if (i + 1) % accumulation_steps == 0 or (i + 1) == len(train_loader):
                 scaler.step(optimiser)
                 scaler.update()
@@ -194,7 +213,7 @@ if __name__ == "__main__":
         with torch.no_grad(), torch.amp.autocast('cuda'):
             for val_batch in val_loader:
                 v_in, v_lab = val_batch["image"].to(SegmentationConfig.device).float(), val_batch["label"].to(SegmentationConfig.device)
-                v_out = sliding_window_inference(v_in, SegmentationConfig.patch_size, 4, model, overlap = 0.5)
+                v_out = sliding_window_inference(v_in, SegmentationConfig.patch_size, 4, model, overlap=0.5)
                 v_out = (torch.sigmoid(v_out) > 0.5).float()
                 dice_metric(y_pred=v_out, y=v_lab)
             
@@ -205,9 +224,17 @@ if __name__ == "__main__":
             scheduler.step(val_dice)
             
             print(f"Epoch {epoch+1} Results: {target.upper()} Dice: {val_dice:.4f}")
-            
+
+            # save every epoch so a session timeout doesn't lose progress
+            torch.save({
+                "epoch": epoch + 1,
+                "model": model.state_dict(),
+                "optimiser": optimiser.state_dict(),
+                "scaler": scaler.state_dict(),
+                "best_dice": best_dice,
+            }, checkpoint_path)
+
             if val_dice > best_dice + 0.001:
                 best_dice = val_dice
-                # Save the model with the target lesion name
-                torch.save(model.state_dict(), f"new_best_{target}_model.pth")
+                torch.save(model.state_dict(), best_model_path)
                 print(f">>> New Best {target.upper()} Model Saved :)")
